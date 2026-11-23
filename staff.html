@@ -148,14 +148,20 @@
         shiftsWorked: 21,
         bonusPay: 30000
       },
-      authMode: "select", // 'select' | 'register'
+      authMode: "select", // 'select' | 'login' | 'register'
       regRole: "accountant",
+      loginEmail: "buh@vostok.kz",
+      loginPass: "123456",
       toast: "",
 
       // 1. Состояние Бухгалтерии (Макет #1)
-      buhNav: "dashboard", // 'dashboard' | 'sales' | 'expenses' | 'payroll' | 'warehouse' | 'reports' | 'taxes' | 'menu_photo' | 'settings'
+      buhNav: "dashboard", // 'dashboard' | 'sales' | 'expenses' | 'refunds' | 'payroll' | 'warehouse' | 'reports' | 'menu_photo' | 'settings'
       analyticsPeriod: "month", // 'day' | 'week' | 'month'
       buhMonthLabel: "Ноябрь 2026",
+      refundFormOrderId: "",
+      refundFormReason: "Посторонний предмет в блюде (волос и т.д.)",
+      refundFormType: "money_refund",
+      refundFormComment: "",
 
       // 2. Состояние Кухни KDS Chef's View (Макет #2)
       kdsStatusFilter: "all", // 'all' | 'cooking' | 'ready'
@@ -338,6 +344,10 @@
             transactionId: o.transaction_id || "",
             status: o.status || "new",
             total: Number(o.total_amount || 0),
+            refundReason: o.refund_reason || "",
+            refundType: o.refund_type || "",
+            refundAmount: Number(o.refund_amount || 0),
+            writeoffCost: Number(o.writeoff_cost || 0),
             courierName: o.courier_name || "Ерлан Нурланов",
             createdAt: o.created_at ? new Date(o.created_at).getTime() : Date.now(),
             items: Array.isArray(o.items) ? o.items : []
@@ -406,11 +416,22 @@
       }
 
       const periodOrders = state.orders.filter((o) => Number(o.createdAt || now) >= cutoff);
-      const validOrders = periodOrders.filter((o) => o.status !== "cancelled");
+      const validOrders = periodOrders.filter((o) => o.status !== "cancelled" && o.status !== "refunded");
       const cancelledOrders = periodOrders.filter((o) => o.status === "cancelled");
+      const refundedOrders = state.orders.filter((o) => o.status === "refunded" || Boolean(o.refundReason));
 
       const revenue = validOrders.reduce((s, o) => s + Number(o.total || 0), 0);
       const avgCheck = validOrders.length ? Math.round(revenue / validOrders.length) : 0;
+
+      const refundMoneyLoss = refundedOrders.reduce((s, o) => {
+        if (o.status === "refunded" || o.refundType === "money_refund") {
+          return s + Number(o.refundAmount || o.total || 0);
+        }
+        return s;
+      }, 0);
+      const writeoffFoodLoss = refundedOrders.reduce((s, o) => {
+        return s + Number(o.writeoffCost || Math.round(Number(o.total || 0) * 0.34));
+      }, 0);
 
       const deliveryOrders = validOrders.filter((o) => o.type === "delivery");
       const dineInOrders = validOrders.filter((o) => o.type !== "delivery");
@@ -421,7 +442,7 @@
       const cardRevenue = cardOrders.reduce((s, o) => s + Number(o.total || 0), 0);
       const acquiringFee = Math.round(cardRevenue * 0.019);
 
-      const foodCostSpent = Math.round(revenue * 0.32);
+      const foodCostSpent = Math.round(revenue * 0.32) + writeoffFoodLoss;
       const warehouseValue = state.inventory.reduce((s, i) => s + Math.round(Number(i.qty || 0) * Number(i.cost || 1500)), 0);
 
       const monthlyPayroll = state.staff.reduce((s, m) => {
@@ -432,7 +453,7 @@
 
       const rentCost = period === "day" ? 4000 : period === "week" ? 28000 : Math.round(revenue * 0.12);
       const marketingCost = Math.round(revenue * 0.05);
-      const otherCost = Math.round(revenue * 0.05);
+      const otherCost = Math.round(revenue * 0.05) + refundMoneyLoss;
       const totalExpenses = foodCostSpent + payrollCost + rentCost + marketingCost + otherCost;
       const netProfit = revenue - totalExpenses;
       const marginPercent = revenue > 0 ? ((netProfit / revenue) * 100).toFixed(1) : "0.0";
@@ -497,6 +518,9 @@
         periodOrders,
         validOrders,
         cancelledOrders,
+        refundedOrders,
+        refundMoneyLoss,
+        writeoffFoodLoss,
         revenue,
         avgCheck,
         deliveryOrders,
@@ -653,7 +677,7 @@
           badge: "Макет №1 • Финансы и P&L",
           title: "Главный бухгалтер / Управляющий",
           person: "Ирина П. / Рустам Каримов",
-          desc: "Ресторанный учёт: Бухгалтерия, Продажи и выручка, Расходы и поставщики, Кадровый учёт и ЗП, Отчёты P&L/ДДС (День/Неделя/Месяц), Налоги и выгрузка в Excel",
+          desc: "Ресторанный учёт: Бухгалтерия, Продажи и выручка, Расходы и поставщики, Возвраты и списания брака (волос/качество), Кадровый учёт и ЗП, Склады и инвентаризация, Отчёты P&L/ДДС (День/Неделя/Месяц) и выгрузка в Excel",
           icon: "🧾",
           theme: "border-blue-500/40 hover:border-blue-400 bg-slate-900/90"
         },
@@ -662,7 +686,7 @@
           badge: "Макет №2 • Chef's View",
           title: "Кухня Терминал: Шеф-повар (KDS)",
           person: "Шеф: Азизбек У. / Александр М.",
-          desc: "Тёмный терминал кухни KDS: фильтр по цехам (Горячий, Холодный, Кондитерский), мигающие срочные заказы (СРОЧНО!), чекбоксы блюд и кнопки ГОТОВО / В РАБОТУ / СДАТЬ",
+          desc: "Тёмный терминал кухни KDS: фильтр по цехам (Горячий, Холодный, Кондитерский), мигающие срочные заказы (СРОЧНО!), переделка возвратов по качеству, чекбоксы блюд и кнопки ГОТОВО / В РАБОТУ / СДАТЬ",
           icon: "👨‍🍳",
           theme: "border-orange-500/40 hover:border-orange-400 bg-slate-900/90"
         },
@@ -683,15 +707,6 @@
           desc: "Тёмный POS-терминал: слева текущий чек с +/- и «Удалить/Отложить/Комментарий», в центре плитка блюд с фото, справа цифровой пин-пад (0–9, 5 000 ₸, 10 000 ₸, 20 000 ₸) и «ОПЛАТИТЬ И ПЕЧАТЬ ЧЕКА»",
           icon: "💳",
           theme: "border-amber-500/40 hover:border-amber-400 bg-slate-900/90"
-        },
-        {
-          role: "warehouse",
-          badge: "Макет №6 • Склад и Ингредиенты",
-          title: "Складской учёт (Шеф-повар / Су-шеф)",
-          person: "Су-шеф: Алексей К.",
-          desc: "Таблица ингредиентов с артикулами (ING-0012..ING-0312), фильтр по складам (Основной, Кухня, Бар), критические остатки, поставщики, кнопки «+ Добавить ингредиент» и «Провести инвентаризацию»",
-          icon: "📦",
-          theme: "border-teal-500/40 hover:border-teal-400 bg-slate-900/90"
         }
       ];
 
@@ -706,30 +721,78 @@
                 </div>
                 <div>
                   <div class="font-black text-xl tracking-tight">ВОСТОК ХАУС • ERP СИСТЕМА ПЕРСОНАЛА</div>
-                  <div class="text-xs text-slate-400">Выберите свою должность для входа в персональный рабочий терминал • База Supabase (${state.orders.length} заказов в ₸)</div>
+                  <div class="text-xs text-slate-400">Авторизация сотрудников, регистрация и вход в персональный рабочий терминал • База Supabase (${state.orders.length} заказов в ₸)</div>
                 </div>
               </div>
-              <div class="flex items-center gap-2.5">
-                <a href="https://mrzeetses.github.io/user/" target="_blank" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200">
-                  ↗ Открыть сайт для клиентов
+              <div class="flex flex-wrap items-center gap-2">
+                <a href="https://mrzeetses.github.io/user/" target="_blank" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200">
+                  ↗ Сайт для клиентов
                 </a>
-                <button type="button" id="toggle-reg-mode-btn" class="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-extrabold text-white shadow">
-                  ${state.authMode === "register" ? "← Назад к выбору роли" : "+ Регистрация нового сотрудника"}
+                <button type="button" data-authmode="select" class="authmode-btn px-3.5 py-2 rounded-xl text-xs font-extrabold transition ${state.authMode === "select" ? "bg-orange-500 text-white shadow" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}">
+                  🖥️ Терминалы должностей (4)
+                </button>
+                <button type="button" data-authmode="login" class="authmode-btn px-3.5 py-2 rounded-xl text-xs font-extrabold transition ${state.authMode === "login" ? "bg-emerald-600 text-white shadow" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}">
+                  🔐 Вход (Авторизация)
+                </button>
+                <button type="button" data-authmode="register" class="authmode-btn px-3.5 py-2 rounded-xl text-xs font-extrabold transition ${state.authMode === "register" ? "bg-blue-600 text-white shadow" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}">
+                  ➕ Регистрация сотрудника
                 </button>
               </div>
             </div>
 
-            ${state.authMode === "register" ? `
+            ${state.authMode === "login" ? `
+              <!-- Форма авторизации (входа) действующего сотрудника -->
+              <div class="max-w-xl mx-auto my-8 bg-slate-900 rounded-3xl p-6 sm:p-7 border border-slate-800 shadow-2xl">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-bold">Авторизация в Supabase</span>
+                  <button type="button" data-authmode="register" class="authmode-btn text-xs font-bold text-blue-400 hover:underline">Нет аккаунта? Регистрация →</button>
+                </div>
+                <h2 class="text-2xl font-black mt-2">Вход в личный кабинет сотрудника</h2>
+                <p class="text-xs text-slate-400 mt-1">Введите рабочий Email и пароль сотрудника или выберите свою учётную запись ниже для быстрого входа в терминал вашей должности</p>
+
+                <form id="staff-login-form" class="space-y-3.5 mt-5">
+                  <div>
+                    <label class="block text-xs font-bold text-slate-400 mb-1">Рабочий Email сотрудника</label>
+                    <input id="slogin-email" type="email" value="${state.loginEmail}" placeholder="buh@vostok.kz" class="w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-white" required />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-bold text-slate-400 mb-1">Пароль</label>
+                    <input id="slogin-pass" type="password" value="${state.loginPass}" placeholder="••••••••" class="w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-white" required />
+                  </div>
+                  <button type="submit" class="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-sm shadow-lg">
+                    🔐 Войти в рабочий терминал
+                  </button>
+                </form>
+
+                <div class="mt-6 pt-5 border-t border-slate-800">
+                  <div class="text-xs font-bold text-slate-400 mb-2.5">Действующие сотрудники в базе данных (быстрая авторизация в 1 клик):</div>
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    ${state.staff.filter((m) => m.role !== "warehouse").slice(0, 6).map((m) => `
+                      <button type="button" data-quicklogin="${m.id}" class="quicklogin-btn p-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700 hover:border-emerald-500 text-left transition flex items-center justify-between gap-2">
+                        <div class="min-w-0">
+                          <div class="font-extrabold text-xs text-white truncate">${m.name}</div>
+                          <div class="text-[11px] text-emerald-400 font-semibold truncate">${ROLE_META[m.role]?.label || m.role} • ${m.email}</div>
+                        </div>
+                        <span class="px-2 py-1 rounded-lg bg-emerald-600/20 text-emerald-300 text-[10px] font-black shrink-0">Войти →</span>
+                      </button>
+                    `).join("")}
+                  </div>
+                </div>
+              </div>
+            ` : state.authMode === "register" ? `
               <!-- Форма регистрации нового сотрудника с выбором должности -->
-              <div class="max-w-lg mx-auto my-10 bg-slate-900 rounded-3xl p-6 border border-slate-800 shadow-2xl">
-                <span class="px-2.5 py-1 rounded-full bg-blue-500/20 text-blue-300 text-xs font-bold">Регистрация в Supabase</span>
+              <div class="max-w-lg mx-auto my-8 bg-slate-900 rounded-3xl p-6 sm:p-7 border border-slate-800 shadow-2xl">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="px-2.5 py-1 rounded-full bg-blue-500/20 text-blue-300 text-xs font-bold">Регистрация в Supabase</span>
+                  <button type="button" data-authmode="login" class="authmode-btn text-xs font-bold text-emerald-400 hover:underline">Уже есть аккаунт? Войти →</button>
+                </div>
                 <h2 class="text-2xl font-black mt-2">Регистрация сотрудника и выбор роли</h2>
-                <p class="text-xs text-slate-400 mt-1">После регистрации сразу откроется личный интерфейс выбранной должности</p>
+                <p class="text-xs text-slate-400 mt-1">После регистрации сотрудник сохраняется в Supabase и сразу открывается личный интерфейс выбранной должности</p>
 
                 <form id="staff-reg-form" class="space-y-3.5 mt-5">
                   <input id="sreg-name" type="text" placeholder="Имя и фамилия сотрудника" class="w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-white" required />
-                  <input id="sreg-email" type="email" placeholder="Рабочий Email" class="w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-white" required />
-                  <input id="sreg-pass" type="password" placeholder="Пароль" class="w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-white" required />
+                  <input id="sreg-email" type="email" placeholder="Рабочий Email (например, chef@vostok.kz)" class="w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-white" required />
+                  <input id="sreg-pass" type="password" placeholder="Пароль (минимум 6 символов)" class="w-full px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-white" required />
                   <div>
                     <label class="block text-xs font-bold text-slate-400 mb-2">Должность сотрудника:</label>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -746,12 +809,16 @@
                 </form>
               </div>
             ` : `
-              <!-- 5 карточек персональных рабочих интерфейсов по вашим макетам -->
+              <!-- 4 карточки персональных рабочих интерфейсов -->
               <div class="my-8">
-                <h1 class="text-2xl sm:text-3xl font-black">Выберите рабочий терминал вашей должности</h1>
-                <p class="text-sm text-slate-400 mt-1">Каждая роль открывает свой собственный специализированный интерфейс. Для возврата сюда нажмите «Выйти / Сдать смену» в правом верхнем углу терминала.</p>
+                <div class="flex flex-wrap items-end justify-between gap-4">
+                  <div>
+                    <h1 class="text-2xl sm:text-3xl font-black">Выберите рабочий терминал вашей должности</h1>
+                    <p class="text-sm text-slate-400 mt-1">Каждая роль открывает свой собственный специализированный интерфейс. Вы также можете войти по Email и паролю через кнопку «🔐 Вход (Авторизация)».</p>
+                  </div>
+                </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 mt-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-6">
                   ${roleCards.map((rc) => `
                     <div data-enterrole="${rc.role}" class="enter-role-card cursor-pointer rounded-3xl p-6 border-2 transition duration-200 flex flex-col justify-between shadow-xl hover:-translate-y-1 ${rc.theme}">
                       <div>
@@ -798,10 +865,10 @@
         { id: "dashboard",  icon: "⊞", label: "Дашборд" },
         { id: "sales",      icon: "📊", label: "Продажи и выручка" },
         { id: "expenses",   icon: "💳", label: "Расходы и поставщики" },
+        { id: "refunds",    icon: "⚠️", label: `Возвраты и брак (${a.refundedOrders.length})` },
         { id: "payroll",    icon: "👥", label: "Кадровый учет и ЗП" },
         { id: "warehouse",  icon: "📦", label: "Склады и инвентаризация" },
         { id: "reports",    icon: "📄", label: "Отчеты (P&L, ДДС)" },
-        { id: "taxes",      icon: "🧾", label: "Налоги" },
         { id: "menu_photo", icon: "🍛", label: "Меню и Фото (Storage)" },
         { id: "settings",   icon: "⚙️", label: "Настройки Supabase" }
       ];
@@ -953,10 +1020,12 @@
               </div>
 
               ${state.buhNav === "warehouse" ? renderEmbeddedWarehouseSection() : ""}
+              ${state.buhNav === "refunds" || state.buhNav === "expenses" ? renderRefundsAndWriteoffsSection(a) : ""}
               ${state.buhNav === "menu_photo" ? renderMenuPhotoSection() : ""}
               ${state.buhNav === "payroll" ? renderPayrollSection(a) : ""}
               ${state.buhNav === "sales" ? renderTopDishesAndDaysSection(a) : ""}
               ${state.buhNav === "settings" ? renderSupabaseSettingsSection() : ""}
+              ${state.buhNav === "dashboard" ? renderRefundsSummaryBanner(a) : ""}
 
               <!-- ЦЕНТРАЛЬНЫЙ РЯД МАКЕТА #1: График «Доходы и Расходы по дням (1..30)» + Кольцевая диаграмма «Структура расходов» -->
               <div class="grid grid-cols-1 xl:grid-cols-12 gap-6">
@@ -1032,6 +1101,26 @@
                       </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100">
+                      ${a.refundedOrders.map((ro) => {
+                        const isMoney = ro.status === "refunded" || ro.refundType === "money_refund";
+                        const lossVal = isMoney
+                          ? -(Number(ro.refundAmount || ro.total || 0) + Number(ro.writeoffCost || Math.round(Number(ro.total || 0) * 0.34)))
+                          : -Number(ro.writeoffCost || Math.round(Number(ro.total || 0) * 0.34));
+                        return `
+                          <tr class="bg-rose-50/70 hover:bg-rose-50">
+                            <td class="py-3 px-3 font-semibold text-rose-800">${new Date(Number(ro.createdAt || Date.now())).toLocaleDateString("ru-RU")}</td>
+                            <td class="py-3 px-3 font-extrabold text-rose-900">
+                              ⚠️ ${isMoney ? `Возврат клиенту + списание брака (Заказ #${ro.number})` : `Списание сырья на переделку блюда (Заказ #${ro.number})`}
+                              <div class="text-[11px] font-semibold text-rose-700">${ro.refundReason || "Претензия по качеству блюда"}</div>
+                            </td>
+                            <td class="py-3 px-3 text-rose-800">${ro.customer} • Акт списания кухни</td>
+                            <td class="py-3 px-3 text-right font-black text-rose-600">${fmt(lossVal)}</td>
+                            <td class="py-3 px-3 text-right">
+                              <span class="px-2.5 py-1 rounded-full bg-rose-200 text-rose-900 text-[11px] font-extrabold">${isMoney ? "Возврат денег" : "Переделка (Списано)"}</span>
+                            </td>
+                          </tr>
+                        `;
+                      }).join("")}
                       ${state.accountingTx.map((tx) => `
                         <tr class="hover:bg-slate-50/80">
                           <td class="py-3 px-3 font-semibold text-slate-700">${tx.date}</td>
@@ -1061,6 +1150,140 @@
                 </div>
               </div>
             </main>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderRefundsSummaryBanner(a) {
+      return `
+        <div class="bg-white rounded-2xl p-4 shadow-sm border-2 border-rose-200 flex flex-wrap items-center justify-between gap-4">
+          <div class="flex items-center gap-3.5">
+            <div class="w-11 h-11 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center text-xl font-black shrink-0">⚠️</div>
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-extrabold text-sm text-slate-900">Бухгалтерский контроль возвратов и брака блюд (волос / вкус / качество)</span>
+                <span class="px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[11px] font-black">Актов: ${a.refundedOrders.length}</span>
+              </div>
+              <div class="text-xs text-slate-600 mt-0.5">
+                Возвраты денег клиентам: <b class="text-rose-600">-${fmt(a.refundMoneyLoss)}</b> • Списание себестоимости испорченного сырья (фудкост брака): <b class="text-rose-600">-${fmt(a.writeoffFoodLoss)}</b> • Учтено в чистой прибыли и ДДС
+              </div>
+            </div>
+          </div>
+          <button type="button" data-buhnav="refunds" class="buhnav-btn px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold shadow-sm shrink-0">
+            Открыть журнал возвратов и оформить акт →
+          </button>
+        </div>
+      `;
+    }
+
+    function renderRefundsAndWriteoffsSection(a) {
+      const candidateOrders = state.orders.slice(0, 35);
+      const selectedOrd = candidateOrders.find((o) => o.id === state.refundFormOrderId) || candidateOrders[0];
+      return `
+        <div class="bg-white rounded-2xl p-5 shadow-sm border-2 border-rose-200 space-y-5">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+            <div>
+              <span class="px-2.5 py-1 rounded-full bg-rose-100 text-rose-800 text-xs font-extrabold">Бухгалтерия • Учёт возвратов, претензий и списания брака</span>
+              <h3 class="text-lg font-black text-slate-900 mt-1.5">⚠️ Возвраты блюд от клиентов (волос, посторонний предмет, не устроил вкус/температура)</h3>
+              <p class="text-xs text-slate-500 mt-0.5">Каждая претензия автоматически отражается в расходах ресторана: списывается себестоимость продуктов (Food Cost брака) и фиксируется возврат средств или бесплатная переделка на кухне KDS.</p>
+            </div>
+            <div class="flex flex-wrap gap-2.5 text-xs">
+              <div class="px-3.5 py-2 rounded-xl bg-rose-50 border border-rose-200">
+                <div class="text-slate-500 font-semibold">Возвраты денег клиентам</div>
+                <div class="text-base font-black text-rose-600">-${fmt(a.refundMoneyLoss)}</div>
+              </div>
+              <div class="px-3.5 py-2 rounded-xl bg-amber-50 border border-amber-200">
+                <div class="text-slate-500 font-semibold">Убыток от списания сырья (Брак)</div>
+                <div class="text-base font-black text-amber-800">-${fmt(a.writeoffFoodLoss)}</div>
+              </div>
+              <div class="px-3.5 py-2 rounded-xl bg-slate-100 border border-slate-200">
+                <div class="text-slate-500 font-semibold">Всего потери от брака</div>
+                <div class="text-base font-black text-slate-900">-${fmt(a.refundMoneyLoss + a.writeoffFoodLoss)}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Форма регистрации нового возврата / акта списания бухгалтером или управляющим -->
+          <form id="buh-refund-form" class="bg-rose-50/60 rounded-2xl p-4 border border-rose-200 grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+            <div class="md:col-span-3">
+              <label class="block text-xs font-extrabold text-slate-700 mb-1">1. Заказ клиента</label>
+              <select id="buh-ref-order" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white">
+                ${candidateOrders.map((o) => `
+                  <option value="${o.id}" ${selectedOrd?.id === o.id ? "selected" : ""}>
+                    Заказ #${o.number} — ${o.customer} (${fmt(o.total)})
+                  </option>
+                `).join("")}
+              </select>
+            </div>
+            <div class="md:col-span-4">
+              <label class="block text-xs font-extrabold text-slate-700 mb-1">2. Причина возврата блюда</label>
+              <select id="buh-ref-reason" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white">
+                <option value="Посторонний предмет в блюде (волос и т.д.)">⚠️ Посторонний предмет в блюде (волос и т.д.)</option>
+                <option value="Не устроил вкус или качество приготовления блюда (пересол / недожар)">🍽️ Не устроил вкус или качество приготовления блюда</option>
+                <option value="Блюдо подано холодным / остывшим">❄️ Блюдо подано холодным / остывшим</option>
+                <option value="Ошибка комплектации заказа (перепутали блюдо)">📦 Ошибка комплектации заказа</option>
+              </select>
+            </div>
+            <div class="md:col-span-3">
+              <label class="block text-xs font-extrabold text-slate-700 mb-1">3. Решение и проводка</label>
+              <select id="buh-ref-type" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-bold bg-white">
+                <option value="money_refund">💸 100% Возврат денег клиенту + списание сырья</option>
+                <option value="remake_dish">🔄 Переделать блюдо бесплатно + списание сырья на кухне</option>
+              </select>
+            </div>
+            <div class="md:col-span-2">
+              <button type="submit" class="w-full py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs shadow">
+                + Провести акт возврата
+              </button>
+            </div>
+          </form>
+
+          <!-- Таблица всех зарегистрированных актов возврата и брака -->
+          <div class="overflow-x-auto">
+            <table class="w-full text-xs text-left">
+              <thead class="text-slate-500 border-b border-slate-200 bg-slate-50">
+                <tr>
+                  <th class="py-2.5 px-3">Заказ и дата</th>
+                  <th class="py-2.5 px-3">Клиент и состав блюда</th>
+                  <th class="py-2.5 px-3">Причина возврата (инцидент)</th>
+                  <th class="py-2.5 px-3">Решение ресторана</th>
+                  <th class="py-2.5 px-3 text-right">Возврат клиенту (₸)</th>
+                  <th class="py-2.5 px-3 text-right">Списание сырья (₸)</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100">
+                ${a.refundedOrders.map((ro) => {
+                  const isMoney = ro.status === "refunded" || ro.refundType === "money_refund";
+                  const refMoney = isMoney ? Number(ro.refundAmount || ro.total || 0) : 0;
+                  const writeoff = Number(ro.writeoffCost || Math.round(Number(ro.total || 0) * 0.34));
+                  return `
+                    <tr class="hover:bg-rose-50/40">
+                      <td class="py-3 px-3 font-extrabold text-slate-900">
+                        Заказ #${ro.number}
+                        <div class="text-[11px] font-normal text-slate-500">${new Date(Number(ro.createdAt || Date.now())).toLocaleDateString("ru-RU")}</div>
+                      </td>
+                      <td class="py-3 px-3">
+                        <div class="font-bold text-slate-800">${ro.customer}</div>
+                        <div class="text-[11px] text-slate-500">${(ro.items || []).map((i) => `${i.name} ×${i.qty}`).join(", ")}</div>
+                      </td>
+                      <td class="py-3 px-3">
+                        <span class="px-2.5 py-1 rounded-lg bg-rose-100 text-rose-900 font-bold inline-block">${ro.refundReason || "Претензия по качеству"}</span>
+                      </td>
+                      <td class="py-3 px-3">
+                        ${isMoney
+                          ? `<span class="px-2.5 py-1 rounded-full bg-rose-600 text-white font-extrabold text-[11px]">💸 Возврат денег клиенту</span>`
+                          : `<span class="px-2.5 py-1 rounded-full bg-amber-500 text-slate-950 font-extrabold text-[11px]">🔄 Бесплатная переделка (KDS)</span>`}
+                      </td>
+                      <td class="py-3 px-3 text-right font-black ${refMoney > 0 ? "text-rose-600" : "text-slate-400"}">
+                        ${refMoney > 0 ? `-${fmt(refMoney)}` : "0 ₸ (Переделка)"}
+                      </td>
+                      <td class="py-3 px-3 text-right font-black text-amber-800">-${fmt(writeoff)}</td>
+                    </tr>
+                  `;
+                }).join("")}
+              </tbody>
+            </table>
           </div>
         </div>
       `;
@@ -1953,6 +2176,14 @@
         return true;
       });
 
+      const pageSize = 6;
+      const totalPages = Math.max(1, Math.ceil(filteredInv.length / pageSize));
+      const curPage = Math.min(Math.max(1, Number(state.whPage) || 1), totalPages);
+      const startIdx = (curPage - 1) * pageSize;
+      const pageItems = filteredInv.slice(startIdx, startIdx + pageSize);
+      const shownFrom = filteredInv.length ? startIdx + 1 : 0;
+      const shownTo = Math.min(filteredInv.length, startIdx + pageItems.length);
+
       return `
         <div class="flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-xl font-black text-slate-900">Складской учет</h2>
@@ -2046,7 +2277,7 @@
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100">
-                ${filteredInv.map((i) => {
+                ${pageItems.map((i) => {
                   const isLow = Number(i.qty) <= Number(i.min);
                   const sumVal = Math.round(Number(i.qty) * Number(i.cost || 1500));
                   return `
@@ -2086,10 +2317,15 @@
 
           <!-- Нижняя панель пагинации и жёлтое уведомление автозаказа (Макет #6) -->
           <div class="mt-5 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-4">
-            <div class="flex items-center gap-2 text-xs text-slate-500">
-              <span>Показано 1–${filteredInv.length} из ${state.inventory.length}</span>
-              <span class="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold">1</span>
-              <span class="w-7 h-7 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center font-bold">2</span>
+            <div class="flex items-center gap-1.5 text-xs text-slate-500">
+              <span class="mr-2">Показано <b>${shownFrom}–${shownTo}</b> из <b>${filteredInv.length}</b> (Страница ${curPage} из ${totalPages})</span>
+              <button type="button" data-whpage="${Math.max(1, curPage - 1)}" class="whpage-btn px-2.5 h-8 rounded-lg border border-slate-200 hover:bg-slate-100 font-bold text-slate-700 ${curPage <= 1 ? "opacity-40 cursor-not-allowed" : ""}">←</button>
+              ${Array.from({ length: totalPages }, (_, idx) => idx + 1).map((pNum) => `
+                <button type="button" data-whpage="${pNum}" class="whpage-btn w-8 h-8 rounded-lg flex items-center justify-center font-extrabold transition ${pNum === curPage ? "bg-blue-600 text-white shadow-sm" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}">
+                  ${pNum}
+                </button>
+              `).join("")}
+              <button type="button" data-whpage="${Math.min(totalPages, curPage + 1)}" class="whpage-btn px-2.5 h-8 rounded-lg border border-slate-200 hover:bg-slate-100 font-bold text-slate-700 ${curPage >= totalPages ? "opacity-40 cursor-not-allowed" : ""}">→</button>
             </div>
 
             ${lowItems.length ? `
@@ -2120,13 +2356,68 @@
         };
       });
 
-      const toggleReg = document.getElementById("toggle-reg-mode-btn");
-      if (toggleReg) {
-        toggleReg.onclick = () => {
-          state.authMode = state.authMode === "register" ? "select" : "register";
+      document.querySelectorAll(".authmode-btn").forEach((b) => {
+        b.onclick = () => {
+          state.authMode = b.dataset.authmode;
           render();
         };
+      });
+
+      document.querySelectorAll(".quicklogin-btn").forEach((b) => {
+        b.onclick = () => {
+          const member = state.staff.find((m) => m.id === b.dataset.quicklogin);
+          if (!member) return;
+          state.user = member;
+          state.activeRole = member.role === "warehouse" ? "accountant" : member.role;
+          state.authMode = "select";
+          persistLocal();
+          notify(`Добро пожаловать, ${member.name} (${ROLE_META[member.role]?.label || member.role})!`);
+        };
+      });
+
+      const loginForm = document.getElementById("staff-login-form");
+      if (loginForm) {
+        loginForm.onsubmit = async (e) => {
+          e.preventDefault();
+          const email = document.getElementById("slogin-email").value.trim().toLowerCase();
+          const pass = document.getElementById("slogin-pass").value.trim();
+          state.loginEmail = email;
+          state.loginPass = pass;
+
+          const sb = getSbClient();
+          if (sb) {
+            try {
+              await sb.auth.signInWithPassword({ email, password: pass });
+            } catch (_) {}
+          }
+
+          let found = state.staff.find((m) => (m.email || "").toLowerCase() === email);
+          if (!found) {
+            let inferredRole = "accountant";
+            if (email.includes("kitchen") || email.includes("chef") || email.includes("povar")) inferredRole = "kitchen";
+            else if (email.includes("courier") || email.includes("kurier")) inferredRole = "courier";
+            else if (email.includes("cash") || email.includes("pos") || email.includes("kass")) inferredRole = "cashier";
+            found = {
+              id: crypto.randomUUID ? crypto.randomUUID() : `u-${Date.now()}`,
+              name: email.split("@")[0],
+              email,
+              role: inferredRole,
+              shift: true,
+              shiftRate: 18000,
+              shiftsWorked: 20,
+              bonusPay: 25000
+            };
+            state.staff.unshift(found);
+          }
+
+          state.user = found;
+          state.activeRole = found.role === "warehouse" ? "accountant" : found.role;
+          state.authMode = "select";
+          persistLocal();
+          notify(`Вы успешно авторизованы как ${found.name} (${ROLE_META[found.role]?.label || found.role})!`);
+        };
       }
+
       document.querySelectorAll(".regrole-btn").forEach((b) => {
         b.onclick = () => { state.regRole = b.dataset.regrole; render(); };
       });
@@ -2136,6 +2427,7 @@
           e.preventDefault();
           const name = document.getElementById("sreg-name").value.trim();
           const email = document.getElementById("sreg-email").value.trim();
+          const pass = document.getElementById("sreg-pass").value.trim();
           const role = state.regRole;
           const newMember = {
             id: crypto.randomUUID ? crypto.randomUUID() : `u-${Date.now()}`,
@@ -2149,6 +2441,9 @@
           };
           const sb = getSbClient();
           if (sb) {
+            try {
+              await sb.auth.signUp({ email, password: pass, options: { data: { full_name: name, role } } });
+            } catch (_) {}
             try {
               await sb.from("profiles").upsert({
                 id: newMember.id,
@@ -2167,7 +2462,7 @@
           state.activeRole = role;
           state.authMode = "select";
           persistLocal();
-          notify(`Сотрудник ${name} зарегистрирован!`);
+          notify(`Сотрудник ${name} зарегистрирован и авторизован!`);
         };
       }
 
@@ -2206,6 +2501,52 @@
             status: "Проведено"
           });
           notify("Бухгалтерская проводка (+145 000 ₸) добавлена в журнал!");
+        };
+      }
+
+      const buhRefundForm = document.getElementById("buh-refund-form");
+      if (buhRefundForm) {
+        buhRefundForm.onsubmit = async (e) => {
+          e.preventDefault();
+          const ordId = document.getElementById("buh-ref-order").value;
+          const reason = document.getElementById("buh-ref-reason").value;
+          const rType = document.getElementById("buh-ref-type").value;
+          const ord = state.orders.find((o) => o.id === ordId);
+          if (!ord) return;
+
+          const isMoney = rType === "money_refund";
+          const newStatus = isMoney ? "refunded" : "cooking";
+          const refundAmount = isMoney ? Number(ord.total || 0) : 0;
+          const writeoffCost = Math.round(Number(ord.total || 0) * 0.34);
+
+          ord.status = newStatus;
+          ord.paymentStatus = isMoney ? "refunded" : ord.paymentStatus;
+          ord.refundReason = reason;
+          ord.refundType = rType;
+          ord.refundAmount = refundAmount;
+          ord.writeoffCost = writeoffCost;
+          ord.comment = `[${isMoney ? "ВОЗВРАТ БУХГАЛТЕРИЯ" : "ПЕРЕДЕЛКА БРАКА"}: ${reason}]`;
+
+          persistLocal();
+          const sb = getSbClient();
+          if (sb) {
+            try {
+              await sb.from("orders").update({
+                status: newStatus,
+                payment_status: ord.paymentStatus,
+                refund_reason: reason,
+                refund_type: rType,
+                refund_amount: refundAmount,
+                writeoff_cost: writeoffCost,
+                comment: ord.comment
+              }).eq("id", ord.id);
+            } catch (_) {}
+          }
+          notify(
+            isMoney
+              ? `Акт возврата по заказу #${ord.number} проведён: возврат клиенту -${fmt(refundAmount)} и списание сырья -${fmt(writeoffCost)}`
+              : `Акт переделки по заказу #${ord.number} проведён: заказ передан на Кухню KDS, списание сырья -${fmt(writeoffCost)}`
+          );
         };
       }
 
@@ -2540,13 +2881,24 @@
       if (whSearch) {
         whSearch.oninput = (e) => {
           state.whSearch = e.target.value;
+          state.whPage = 1;
           render();
           const el = document.getElementById("wh-search-inp");
           if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
         };
       }
       const whLocSel = document.getElementById("wh-loc-sel");
-      if (whLocSel) whLocSel.onchange = (e) => { state.whLocation = e.target.value; render(); };
+      if (whLocSel) whLocSel.onchange = (e) => { state.whLocation = e.target.value; state.whPage = 1; render(); };
+
+      document.querySelectorAll(".whpage-btn").forEach((b) => {
+        b.onclick = () => {
+          const targetPage = Number(b.dataset.whpage) || 1;
+          if (targetPage !== state.whPage) {
+            state.whPage = targetPage;
+            render();
+          }
+        };
+      });
 
       ["wh-add-ing-btn", "wh-add-ing-btn-2"].forEach((id) => {
         const btn = document.getElementById(id);
